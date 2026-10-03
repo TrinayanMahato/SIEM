@@ -1,0 +1,21 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider             = "prisma-client-py"
+  recursive_type_depth = 5
+}
+
+model SecurityAlert {
+  id            Int      @id @default(autoincrement())
+  alert_type    String
+  raw_payload   Json
+  logs_analyzed Int      @default(0)
+  llm_verdict   String?
+  llm_reasoning String?
+  created_at    DateTime @default(now())
+
+  @@index([alert_type])
+}
