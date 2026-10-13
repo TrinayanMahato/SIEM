@@ -2,6 +2,20 @@
 
 A modern, AI-powered Security Information and Event Management (SIEM) webhook receiver. This project ingests security alerts from Elastalert, enriches them by querying Elasticsearch for surrounding log context, and uses Google's Gemini AI to analyze the threat. Based on the AI's verdict, it enforces automated or human-in-the-loop mitigations using the macOS firewall (`pfctl`) and user policies (`pwpolicy`).
 
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Alert Handlers Built-In](#alert-handlers-built-in)
+- [Tech Stack](#tech-stack)
+- [Prerequisites](#prerequisites)
+- [Setup and Installation](#setup-and-installation)
+- [Running the Server](#running-the-server)
+- [Simulating an Alert](#simulating-an-alert)
+- [Safe Mode](#safe-mode)
+
+---
+
 ## Features
 
 - **Webhook Ingestion**: Fast and lightweight FastAPI server to receive alerts from Elastalert (or any SIEM).
@@ -13,6 +27,86 @@ A modern, AI-powered Security Information and Event Management (SIEM) webhook re
 - **Human-in-the-Loop Approvals**: For severe actions (permanent blocks or locking multiple users), the system sends an interactive HTML email (via Resend) to SOC analysts with "Yes/No" approval buttons.
 - **Audit Logging**: Uses Prisma and SQLite to keep a persistent record of all incoming raw payloads, the AI's reasoning, and the final verdicts.
 - **Fail-Safes**: Implements a Whitelist system to prevent automated locking of VIPs, gateway IPs, or executive accounts.
+
+## Architecture
+
+An alert arrives with almost no context — an IP, a rule name, a count. The pipeline's job
+is to turn that into a decision that can be defended, so every stage adds evidence before
+anything is enforced.
+
+```
+┌────────────┐
+│ Elastalert │  rule fires
+└─────┬──────┘
+      │ POST /webhook
+      ▼
+┌─────────────────────────────────────────────────────────────┐
+│  main.py (FastAPI)                                          │
+│    1. persist the raw payload immediately  ──► SecurityAlert│
+│    2. attach _db_alert_id                                   │
+│    3. hand off to process_alert()                           │
+└─────┬───────────────────────────────────────────────────────┘
+      ▼
+┌─────────────────────────────────────────────────────────────┐
+│  services/alert_handlers.py        routes by rule_name       │
+│     HTTP 4xx spike · privilege escalation                    │
+│     console login  · SSH brute force                         │
+└─────┬───────────────────────────────────────────────────────┘
+      ▼
+┌──────────────────┐   surrounding logs   ┌──────────────────┐
+│ services/        │ ◄─────────────────── │  Elasticsearch   │
+│ es_client.py     │                      └──────────────────┘
+└─────┬────────────┘
+      ▼
+┌──────────────────┐   structured verdict ┌──────────────────┐
+│ gemini_client.py │ ◄─────────────────── │  Gemini          │
+│ + prompts.py     │                      └──────────────────┘
+└─────┬────────────┘
+      ▼
+┌─────────────────────────────────────────────────────────────┐
+│  whitelist.py   ── VIPs, gateways and executives exempted    │
+└─────┬───────────────────────────────────────────────────────┘
+      ▼
+   normal          block_temporarily          block_permanently
+      │                    │                          │
+   log only        firewall.py (pfctl /         email_service.py
+                   pwpolicy) + auto-undo        → analyst approves
+                                                → /action/* endpoint
+```
+
+### Why enrichment comes before the model
+
+A raw alert cannot distinguish a broken link from a vulnerability scan — both look like
+HTTP 403s. `es_client.py` queries Elasticsearch for the logs *surrounding* the alert, so
+the model sees the request sequence rather than a single data point. The quality of the
+verdict is mostly a function of this step, not of the prompt.
+
+### Two tiers of enforcement
+
+Severity determines who decides:
+
+| Verdict | Decided by | Action |
+| :--- | :--- | :--- |
+| `normal` | Automatic | Logged, nothing enforced |
+| `block_temporarily` | Automatic | `pfctl` IP block or `pwpolicy` account lock, auto-reverted on a timer |
+| `block_permanently` | **A human** | Analyst receives an interactive email; the block only happens when they click |
+
+Reversible actions are automated; irreversible ones are not. The approval endpoints in
+`main.py` (`/action/block-permanently`, `/action/ip-decision`, `/action/users-decision`)
+exist so the analyst's click *is* the execution path.
+
+### Fail-safes
+
+`whitelist.py` is checked before any enforcement, so gateway IPs and executive accounts
+cannot be locked out by an automated verdict — the failure mode of an over-eager SIEM is
+locking the people who would fix it. `PROTECTED_USERNAMES` applies the same guard to the
+multi-user lock path.
+
+### Audit trail
+
+The raw payload is written to the database *before* analysis, so an alert is recoverable
+even if enrichment or the model call fails. The record is then updated with the model's
+reasoning and the final verdict, giving a complete chain from trigger to action.
 
 ## Alert Handlers Built-In
 
@@ -89,6 +183,16 @@ python3 simulate_alert.py
 ```
 You will see the AI's real-time reasoning and verdict printed in the FastAPI terminal!
 
-## Project State: Dry-Run Mode
+## Safe Mode
 
-Currently, the project is configured in a safe **"Dry-Run"** mode. The AI analyzes logs and prints its verdict (e.g., `[DRY-RUN] LLM Action: block_permanently`), but actual firewall commands and emails are commented out in `services/alert_handlers.py`. To take the SIEM live, simply uncomment the enforcement blocks.
+The pipeline ships in **dry-run** by default. The full chain runs — enrichment, model
+analysis, whitelist checks, verdict — and the decision is logged rather than enforced:
+
+```
+[DRY-RUN] LLM Action: block_permanently
+```
+
+This is the right default for a system that can lock accounts and drop packets: it lets
+you validate the model's judgement against real traffic before giving it the authority to
+act. Enable enforcement by uncommenting the action blocks in
+`services/alert_handlers.py` once the verdicts look right.
