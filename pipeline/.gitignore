@@ -1,0 +1,11 @@
+# Runtime logs — these grow to hundreds of megabytes
+logs/
+*.log
+
+# ElastAlert virtualenv
+elastalert-env/
+venv/
+
+# Upstream Sigma ruleset — clone it instead, do not vendor it
+sigma/rules/
+sigma/rules-*/

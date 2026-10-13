@@ -1,0 +1,22 @@
+# Routed by main.py → process_alert() → handle_http_error_spike()
+name: HTTP Error Spike
+type: frequency
+index: soc-logs-*
+
+num_events: 20
+timeframe:
+  minutes: 1
+realert:
+  minutes: 5
+
+filter:
+  - query:
+      query_string:
+        query: 'web.status.keyword:(4* OR 5*)'
+
+alert:
+  - post
+http_post_url: "http://127.0.0.1:8000/webhook"
+http_post_all_values: true
+http_post_static_payload:
+  rule_name: "HTTP Error Spike"

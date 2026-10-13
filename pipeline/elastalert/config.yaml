@@ -1,0 +1,21 @@
+# ElastAlert 2 — queries Elasticsearch on a schedule and fires the rules
+# in rules/. Paths are relative to this file, so the repository can be
+# cloned anywhere.
+
+run_every:
+  minutes: 1
+
+rules_folder: rules
+
+es_host: 127.0.0.1
+es_port: 9200
+
+# Internal index ElastAlert uses to remember what it has already alerted on
+writeback_index: elastalert_status
+writeback_alias: elastalert_alerts
+
+alert_time_limit:
+  days: 2
+
+buffer_time:
+  minutes: 15

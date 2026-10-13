@@ -1,0 +1,31 @@
+# Vector — log shipper
+# Reads the macOS unified log, filters at the source, ships to Kafka.
+
+# 1. SOURCE: live macOS unified log, filtered before it ever leaves the host
+[sources.mac_logs]
+type = "exec"
+command = [
+  "log", "stream",
+  "--style", "ndjson",
+  "--predicate", "process == \"sshd\" OR process == \"sudo\" OR process == \"login\""
+]
+mode = "streaming"
+decoding.codec = "json"
+
+# 2. TRANSFORM: rename the timestamp so it does not collide with the
+#    existing "timestamp" mapping in Elasticsearch
+[transforms.fix_fields]
+type = "remap"
+inputs = ["mac_logs"]
+source = '''
+.mac_timestamp = del(.timestamp)
+.event_source = "macos_unified_log"
+'''
+
+# 3. SINK: ship to Kafka
+[sinks.to_kafka]
+type = "kafka"
+inputs = ["fix_fields"]
+bootstrap_servers = "127.0.0.1:9092"
+topic = "soc-raw-logs"
+encoding.codec = "json"

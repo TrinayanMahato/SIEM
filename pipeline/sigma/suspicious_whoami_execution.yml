@@ -1,0 +1,12 @@
+title: Suspicious Whoami Execution
+id: 9a454eb8-b9cc-4a7a-8f75-e8d13df5d3a9
+status: experimental
+description: Detects when someone runs whoami to check their system privileges.
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection:
+        Image|endswith: '\whoami.exe'
+    condition: selection
+level: low
